@@ -10,7 +10,7 @@ app.use(bodyParser.json());
 app.use(cors());
 
 const pool = new Pool({
-  connectionString: 'postgresql://postgres:DcKjrtBiMkDeDMkPqkJujJwwhHVaFvQK@viaduct.proxy.rlwy.net:17470/railway',
+  connectionString: 'postgresql://postgres:atrox123@localhost:5432/app',
 });
 
 const storage = multer.memoryStorage();
@@ -36,7 +36,6 @@ app.post('/login', async (req, res) => {
 });
 
 // Update user endpoint
-// Update user endpoint
 app.put('/api/users/:id', async (req, res) => {
   const { id } = req.params;
   const { email, password } = req.body;
@@ -61,22 +60,13 @@ app.put('/api/users/:id', async (req, res) => {
 });
 
 app.post('/packs', upload.array('images', 10), async (req, res) => {
-  const { brand, price } = req.body;
+  const { brand, price, numberOfItems, category } = req.body;
 
-  // Handle items as either comma-separated string or array
-  let items = req.body.items;
-  if (typeof items === 'string') {
-    items = items.split(',').map(item => item.trim());
-  } else if (!Array.isArray(items)) {
-    items = [];
-  }
-
-  if (!brand || !items.length || !price) {
-    return res.status(400).json({ message: 'Brand, items, and price are required' });
+  if (!brand || !numberOfItems || !price || !category) {
+    return res.status(400).json({ message: 'Brand, number of items, price, and category are required' });
   }
 
   const images = req.files;
-
   const status = 'Not Sold';
 
   try {
@@ -86,24 +76,25 @@ app.post('/packs', upload.array('images', 10), async (req, res) => {
     const randomNumber = Math.floor(10000 + Math.random() * 90000);
     const packId = `${randomLetters}${randomNumber}`;
 
-    const result = await client.query(
-      'INSERT INTO packs (id, brand, price, status) VALUES ($1, $2, $3, $4) RETURNING id, created_date',
-      [packId, brand, parseFloat(price), status]
+    // Insert into packs table
+    const packInsertResult = await client.query(
+      'INSERT INTO packs (id, brand, price, status, number_of_items, category) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_date',
+      [packId, brand, parseFloat(price), status, parseInt(numberOfItems), category]
     );
+    const { id: insertedPackId, created_date } = packInsertResult.rows[0];
 
-    const { id: insertedPackId, created_date } = result.rows[0];
-
-    const itemQueries = items.map((itemName, index) => {
-      const itemId = `${packId}${String(index + 1).padStart(5, '0')}`;
-      return client.query('INSERT INTO items (id, name, pack_id) VALUES ($1, $2, $3)', [itemId, itemName, insertedPackId]);
-    });
-
+    // Insert into items table
+    const itemQueries = [];
+    for (let i = 0; i < numberOfItems; i++) {
+      const itemId = `${packId}${String(i + 1).padStart(5, '0')}`;
+      itemQueries.push(client.query('INSERT INTO items (id, pack_id) VALUES ($1, $2)', [itemId, insertedPackId]));
+    }
     await Promise.all(itemQueries);
 
+    // Insert into images table
     const imageQueries = images.map((image) => {
       return client.query('INSERT INTO images (pack_id, data) VALUES ($1, $2)', [insertedPackId, image.buffer]);
     });
-
     await Promise.all(imageQueries);
 
     client.release();
@@ -142,6 +133,23 @@ app.get('/packs', async (req, res) => {
     res.json(packsWithItemsAndImages);
   } catch (err) {
     console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+}); 
+
+// Backend endpoint to fetch categories
+app.get('/categories', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    
+    // Query to fetch distinct categories from packs table
+    const categoriesResult = await client.query('SELECT DISTINCT category FROM packs');
+    const categories = categoriesResult.rows.map(row => row.category);
+
+    client.release();
+    res.json(categories);
+  } catch (err) {
+    console.error('Error fetching categories:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -187,12 +195,18 @@ app.post('/packs/:id/items', async (req, res) => {
   }
 });
 
-
-
 app.delete('/items/:id', async (req, res) => {
   const { id } = req.params;
+  const { password } = req.body; // Extract password from request body
+
   try {
     const client = await pool.connect();
+
+    // Example: Verify password (Replace with your actual password verification logic)
+    const correctPassword = 'test'; // Replace with actual correct password
+    if (password !== correctPassword) {
+      return res.status(401).json({ message: 'Incorrect password. Access denied.' });
+    }
 
     // Get pack_id for cascading deletion
     const packIdQuery = 'SELECT pack_id FROM items WHERE id = $1';
@@ -217,13 +231,12 @@ app.delete('/items/:id', async (req, res) => {
     }
 
     client.release();
-    res.json({ message: 'Item deleted successfully' });
+    res.json({ success: true, message: 'Item deleted successfully' });
   } catch (error) {
     console.error('Error deleting item:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
-
 
 app.get('/items', async (req, res) => {
   try {
@@ -271,7 +284,6 @@ app.delete('/items/:id', async (req, res) => {
   }
 });
 
-
 app.delete('/images/delete', async (req, res) => {
   const { imageIds } = req.body;
 
@@ -299,10 +311,12 @@ app.get('/items/search', (req, res) => {
     res.status(400).json({ message: 'Search query parameter "q" is required' });
     return;
   }
+
   const filteredItems = items.filter(item =>
-    item.name.toLowerCase().includes(q.toLowerCase()) ||
-    item.id.toString().toLowerCase().includes(q.toLowerCase())
+    item.id.toString().toLowerCase().includes(q.toLowerCase()) ||
+    item.pack_id.toString().toLowerCase().includes(q.toLowerCase())
   );
+
   res.json(filteredItems);
 });
 
@@ -371,9 +385,17 @@ app.get('/transactions', async (req, res) => {
 
 app.delete('/transactions/:id', async (req, res) => {
   const { id } = req.params;
+  const { password } = req.body; // Extract password from request body
 
   try {
     const client = await pool.connect();
+
+    // Example: Verify password (Replace with your actual password verification logic)
+    const correctPassword = 'test'; // Replace with actual correct password
+    if (password !== correctPassword) {
+      client.release();
+      return res.status(401).json({ message: 'Incorrect password. Access denied.' });
+    }
 
     // Fetch transaction details to find the pack_id
     const transactionQuery = 'SELECT * FROM transactions WHERE id = $1';
@@ -411,7 +433,7 @@ app.delete('/transactions/:id', async (req, res) => {
 
     client.release();
 
-    res.json({ message: 'Transaction deleted successfully' });
+    res.json({ success: true, message: 'Transaction deleted successfully' });
   } catch (error) {
     console.error('Error deleting transaction:', error);
     res.status(500).json({ message: 'Server error' });
