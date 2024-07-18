@@ -197,15 +197,95 @@ app.post('/packs/:id/items', async (req, res) => {
 
 app.delete('/items/:id', async (req, res) => {
   const { id } = req.params;
-  const { password } = req.body; // Extract password from request body
+  const { password } = req.body; // Only password is required
 
   try {
     const client = await pool.connect();
 
-    // Example: Verify password (Replace with your actual password verification logic)
-    const correctPassword = 'test'; // Replace with actual correct password
-    if (password !== correctPassword) {
-      return res.status(401).json({ message: 'Incorrect password. Access denied.' });
+    // Authenticate the user based on password
+    const userQuery = 'SELECT * FROM users WHERE password = $1';
+    const userResult = await client.query(userQuery, [password]);
+    const user = userResult.rows[0];
+
+    if (!user) {
+      client.release();
+      return res.status(400).json({ message: 'Password incorrect. Access denied.' });
+    }
+
+    // Get pack_id for cascading deletion
+    const packIdQuery = 'SELECT pack_id FROM items WHERE id = $1';
+    const packIdResult = await client.query(packIdQuery, [id]);
+    const packId = packIdResult.rows[0].pack_id;
+
+    // Delete the item
+    const deleteItemQuery = 'DELETE FROM items WHERE id = $1';
+    const deleteItemResult = await client.query(deleteItemQuery, [id]);
+
+    // Check if the deletion was successful
+    if (deleteItemResult.rowCount === 0) {
+      client.release();
+      return res.status(404).json({ message: 'Item not found' });
+    }
+
+    // Update the number of items in the pack
+    const updateItemCountQuery = 'UPDATE packs SET number_of_items = number_of_items - 1 WHERE id = $1';
+    await client.query(updateItemCountQuery, [packId]);
+
+    // Check if the pack has any remaining items
+    const itemCountQuery = 'SELECT number_of_items FROM packs WHERE id = $1';
+    const itemCountResult = await client.query(itemCountQuery, [packId]);
+    const remainingItemCount = parseInt(itemCountResult.rows[0].number_of_items);
+
+    // If no items remain in the pack, delete associated images and transactions
+    if (remainingItemCount === 0) {
+      await client.query('DELETE FROM images WHERE pack_id = $1', [packId]);
+      await client.query('DELETE FROM transactions WHERE pack_id = $1', [packId]);
+      // Delete the pack itself
+      await client.query('DELETE FROM packs WHERE id = $1', [packId]);
+    }
+
+    client.release();
+    res.json({ success: true, message: 'Item deleted successfully' });
+
+  } catch (error) {
+    console.error('Error deleting item:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.get('/items', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    const result = await client.query('SELECT * FROM items');
+    const items = result.rows;
+    client.release();
+    res.json(items);
+  } catch (error) {
+    console.error('Error fetching items:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.delete('/items/:id', async (req, res) => {
+  const { id } = req.params;
+  const { email, password } = req.body;
+
+  try {
+    const client = await pool.connect();
+    const userQuery = 'SELECT * FROM users WHERE email = $1';
+    const userResult = await client.query(userQuery, [email]);
+    const user = userResult.rows[0];
+
+    if (!user) {
+      client.release();
+      return res.status(400).json({ message: 'Email or password incorrect' });
+    }
+
+    // Compare the provided password with the hashed password from the database
+    const passwordMatch = await compare(password, user.password);
+    if (!passwordMatch) {
+      client.release();
+      return res.status(400).json({ message: 'Email or password incorrect' });
     }
 
     // Get pack_id for cascading deletion
@@ -232,52 +312,6 @@ app.delete('/items/:id', async (req, res) => {
 
     client.release();
     res.json({ success: true, message: 'Item deleted successfully' });
-  } catch (error) {
-    console.error('Error deleting item:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-app.get('/items', async (req, res) => {
-  try {
-    const client = await pool.connect();
-    const result = await client.query('SELECT * FROM items');
-    const items = result.rows;
-    client.release();
-    res.json(items);
-  } catch (error) {
-    console.error('Error fetching items:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-app.delete('/items/:id', async (req, res) => {
-  const { id } = req.params;
-  try {
-    const client = await pool.connect();
-
-    // Get pack_id and position of the item being deleted
-    const packIdQuery = 'SELECT pack_id FROM items WHERE id = $1';
-    const packIdResult = await client.query(packIdQuery, [id]);
-    const packId = packIdResult.rows[0].pack_id;
-
-    // Delete the item
-    await client.query('DELETE FROM items WHERE id = $1', [id]);
-
-    // Fetch all remaining items in the pack and update their IDs sequentially
-    const fetchItemsQuery = 'SELECT id FROM items WHERE pack_id = $1 ORDER BY id';
-    const fetchItemsResult = await client.query(fetchItemsQuery, [packId]);
-    const items = fetchItemsResult.rows;
-
-    // Update items in a batch to ensure sequential IDs
-    for (let i = 0; i < items.length; i++) {
-      const newId = `${packId}${String(i + 1).padStart(5, '0')}`;
-      await client.query('UPDATE items SET id = $1 WHERE id = $2', [newId, items[i].id]);
-    }
-
-    client.release();
-
-    res.json({ message: 'Item deleted successfully', remainingItems: items.length });
   } catch (error) {
     console.error('Error deleting item:', error);
     res.status(500).json({ message: 'Server error' });
@@ -322,9 +356,20 @@ app.get('/items/search', (req, res) => {
 
 app.post('/packs/:id/sold', async (req, res) => {
   const { id } = req.params;
+  const { amount, password } = req.body; // Extract amount and password from request body
 
   try {
     const client = await pool.connect();
+
+    // Authenticate the user based on password
+    const userQuery = 'SELECT * FROM users WHERE password = $1';
+    const userResult = await client.query(userQuery, [password]);
+    const user = userResult.rows[0];
+
+    if (!user) {
+      client.release();
+      return res.status(401).json({ message: 'Incorrect password. Access denied.' });
+    }
 
     // Fetch pack details
     const packQuery = 'SELECT * FROM packs WHERE id = $1';
@@ -336,16 +381,14 @@ app.post('/packs/:id/sold', async (req, res) => {
       return res.status(404).json({ message: 'Pack not found' });
     }
 
-    // Calculate profit (assuming profit is amount received - pack price)
-    const { price } = pack;
-    const { amount } = req.body;
-
     // Validate 'amount' to ensure it's a valid number
-    if (!parseFloat(amount)) {
+    if (isNaN(parseFloat(amount))) {
       client.release();
       return res.status(400).json({ message: 'Invalid amount' });
     }
 
+    // Calculate profit (assuming profit is amount received - pack price)
+    const { price } = pack;
     const profit = parseFloat(amount) - parseFloat(price);
 
     // Insert transaction into database
@@ -370,6 +413,7 @@ app.post('/packs/:id/sold', async (req, res) => {
   }
 });
 
+
 // Endpoint to fetch transactions
 app.get('/transactions', async (req, res) => {
   try {
@@ -390,9 +434,12 @@ app.delete('/transactions/:id', async (req, res) => {
   try {
     const client = await pool.connect();
 
-    // Example: Verify password (Replace with your actual password verification logic)
-    const correctPassword = 'test'; // Replace with actual correct password
-    if (password !== correctPassword) {
+    // Authenticate the user based on password
+    const userQuery = 'SELECT * FROM users WHERE password = $1';
+    const userResult = await client.query(userQuery, [password]);
+    const user = userResult.rows[0];
+
+    if (!user) {
       client.release();
       return res.status(401).json({ message: 'Incorrect password. Access denied.' });
     }
