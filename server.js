@@ -154,43 +154,29 @@ app.get('/categories', async (req, res) => {
   }
 });
 
-// Endpoint to add a new item to a pack
-app.post('/packs/:id/items', async (req, res) => {
+// Endpoint to update pack details
+app.put('/packs/:id', async (req, res) => {
   const { id } = req.params;
-  const { name } = req.body;
+  const { brand, category, number_of_items, price } = req.body;
 
   try {
     const client = await pool.connect();
 
-    // Get the current number of items for the pack
-    const itemCountQuery = 'SELECT COUNT(*) FROM items WHERE pack_id = $1';
-    const itemCountResult = await client.query(itemCountQuery, [id]);
-    const itemCount = parseInt(itemCountResult.rows[0].count);
-
-    // Generate the item ID using the pack ID and the next available number
-    let newItemId;
-    let foundNewId = false;
-    let i = 1;
-    do {
-      newItemId = `${id}${String(itemCount + i).padStart(5, '0')}`;
-      const checkItemIdQuery = 'SELECT id FROM items WHERE id = $1';
-      const checkItemIdResult = await client.query(checkItemIdQuery, [newItemId]);
-      if (checkItemIdResult.rows.length === 0) {
-        foundNewId = true;
-      }
-      i++;
-    } while (!foundNewId);
-
-    // Insert the item into the database
-    const insertItemQuery = 'INSERT INTO items (id, name, pack_id) VALUES ($1, $2, $3) RETURNING *';
-    const result = await client.query(insertItemQuery, [newItemId, name, id]);
-    const newItem = result.rows[0];
+    // Update the pack details in the database
+    const updatePackQuery = `
+      UPDATE packs
+      SET brand = $1, category = $2, number_of_items = $3, price = $4, created_date = NOW()
+      WHERE id = $5
+      RETURNING *
+    `;
+    const result = await client.query(updatePackQuery, [brand, category, number_of_items, price, id]);
+    const updatedPack = result.rows[0];
 
     client.release();
 
-    res.status(201).json(newItem);
+    res.status(200).json(updatedPack);
   } catch (err) {
-    console.error('Error adding item:', err);
+    console.error('Error updating pack:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -412,7 +398,6 @@ app.post('/packs/:id/sold', async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
-
 
 // Endpoint to fetch transactions
 app.get('/transactions', async (req, res) => {
