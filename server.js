@@ -374,11 +374,18 @@ app.post('/packs/:id/sold', async (req, res) => {
   }
 });
 
-// Endpoint to fetch transactions
+// Endpoint to fetch transactions along with pack details
 app.get('/transactions', async (req, res) => {
   try {
     const client = await pool.connect();
-    const result = await client.query('SELECT id, pack_id, sale_date, amount, profit FROM transactions');
+    
+    // Query to fetch transactions and join with packs to get category
+    const result = await client.query(`
+      SELECT t.id, t.pack_id, t.sale_date, t.amount, t.profit, p.category
+      FROM transactions t
+      JOIN packs p ON t.pack_id = p.id
+    `);
+    
     client.release();
     res.json(result.rows);
   } catch (error) {
