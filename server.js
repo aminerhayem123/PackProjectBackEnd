@@ -656,6 +656,82 @@ app.post('/packs/:id/images', upload.array('images', 10), async (req, res) => {
   }
 });
 
+// Endpoint to get statistics
+app.get('/stats', async (req, res) => {
+  try {
+    const client = await pool.connect();
+
+    // Query 1: Total Number of Items
+    const totalItemsResult = await client.query('SELECT COUNT(*) AS total_items FROM items');
+    const totalItems = totalItemsResult.rows[0].total_items;
+
+    // Query 2: Number of Items in Each Category
+    const itemsByCategoryResult = await client.query(`
+      SELECT category, COUNT(*) AS number_of_items
+      FROM packs
+      GROUP BY category
+      ORDER BY category
+    `);
+
+    // Query 3: Number of Packs Sold
+    const packsSoldResult = await client.query('SELECT COUNT(*) AS total_packs_sold FROM transactions');
+    const totalPacksSold = packsSoldResult.rows[0].total_packs_sold;
+
+    // Query 4: Total Profit and Total Expenses
+    const totalsResult = await client.query(`
+      SELECT 
+        SUM(profit) AS total_profit,
+        (SELECT SUM(price) FROM packs) AS total_expenses
+      FROM transactions
+    `);
+    const { total_profit: totalProfit, total_expenses: totalExpenses } = totalsResult.rows[0];
+
+    // Query 5: Percentage of Profit from Expenses
+    const profitPercentage = totalExpenses ? (totalProfit / totalExpenses) * 100 : 0;
+
+    // Query 6: Profit and Expenses for Current Month
+    const monthlyDataResult = await client.query(`
+      SELECT 
+        SUM(profit) AS monthly_profit,
+        (SELECT SUM(price) FROM packs WHERE created_date >= date_trunc('month', current_date)) AS monthly_expenses
+      FROM transactions
+      WHERE sale_date >= date_trunc('month', current_date)
+    `);
+    const { monthly_profit: monthlyProfit, monthly_expenses: monthlyExpenses } = monthlyDataResult.rows[0];
+    const monthlyProfitPercentage = monthlyExpenses ? (monthlyProfit / monthlyExpenses) * 100 : 0;
+
+    // Query 7: Profit and Expenses for Current Year
+    const yearlyDataResult = await client.query(`
+      SELECT 
+        SUM(profit) AS yearly_profit,
+        (SELECT SUM(price) FROM packs WHERE created_date >= date_trunc('year', current_date)) AS yearly_expenses
+      FROM transactions
+      WHERE sale_date >= date_trunc('year', current_date)
+    `);
+    const { yearly_profit: yearlyProfit, yearly_expenses: yearlyExpenses } = yearlyDataResult.rows[0];
+    const yearlyProfitPercentage = yearlyExpenses ? (yearlyProfit / yearlyExpenses) * 100 : 0;
+
+    // Response
+    res.json({
+      totalItems,
+      itemsByCategory: itemsByCategoryResult.rows,
+      totalPacksSold,
+      totalProfit,
+      totalExpenses,
+      profitPercentage,
+      monthlyProfit,
+      monthlyExpenses,
+      monthlyProfitPercentage,
+      yearlyProfit,
+      yearlyExpenses,
+      yearlyProfitPercentage,
+    });
+  } catch (error) {
+    console.error('Error fetching statistics:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
 app.listen(5000, () => {
   console.log('Server is running on port 5000');
 });
