@@ -664,6 +664,60 @@ app.get('/stats', async (req, res) => {
   }
 });
 
+// Endpoint to delete pack
+app.delete('/packs/:id', async (req, res) => {
+  const { id } = req.params;
+  const { password } = req.body;
+
+  try {
+    const client = await pool.connect();
+
+    // Authenticate the user based on password
+    const userQuery = 'SELECT * FROM users WHERE password = $1';
+    const userResult = await client.query(userQuery, [password]);
+    const user = userResult.rows[0];
+
+    if (!user) {
+      client.release();
+      return res.status(401).json({ message: 'Incorrect password. Access denied.' });
+    }
+
+    // Fetch pack details to ensure it exists
+    const packQuery = 'SELECT * FROM packs WHERE id = $1';
+    const packResult = await client.query(packQuery, [id]);
+    const pack = packResult.rows[0];
+
+    if (!pack) {
+      client.release();
+      return res.status(404).json({ message: 'Pack not found' });
+    }
+
+    // Option 1: Delete related items first
+    const deleteItemsQuery = 'DELETE FROM items WHERE pack_id = $1';
+    await client.query(deleteItemsQuery, [id]);
+    // Option 2: Delete related Transactions first
+    const deleteTransactionQuery = 'DELETE FROM Transactions WHERE pack_id = $1';
+    await client.query(deleteTransactionQuery, [id]);
+    // Option 3: Delete related images first
+    const deleteImagesQuery = 'DELETE FROM images WHERE pack_id = $1';
+    await client.query(deleteImagesQuery, [id]);
+    // Option 3: Update related items to remove the pack reference
+    // const updateItemsQuery = 'UPDATE items SET pack_id = NULL WHERE pack_id = $1';
+    // await client.query(updateItemsQuery, [id]);
+
+    // Delete the pack
+    const deletePackQuery = 'DELETE FROM packs WHERE id = $1';
+    await client.query(deletePackQuery, [id]);
+
+    client.release();
+
+    res.json({ success: true, message: 'Pack deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting pack:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 app.listen(5000, () => {
   console.log('Server is running on port 5000');
 });
