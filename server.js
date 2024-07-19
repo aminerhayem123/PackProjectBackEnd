@@ -276,7 +276,12 @@ app.delete('/items/:id', async (req, res) => {
     // Get pack_id for cascading deletion
     const packIdQuery = 'SELECT pack_id FROM items WHERE id = $1';
     const packIdResult = await client.query(packIdQuery, [id]);
-    const packId = packIdResult.rows[0].pack_id;
+    const packId = packIdResult.rows[0]?.pack_id;
+
+    if (!packId) {
+      client.release();
+      return res.status(404).json({ message: 'Item not found' });
+    }
 
     // Delete the item
     const deleteItemQuery = 'DELETE FROM items WHERE id = $1';
