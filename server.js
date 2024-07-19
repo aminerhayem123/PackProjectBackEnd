@@ -159,11 +159,15 @@ app.put('/packs/:id', async (req, res) => {
   const { id } = req.params;
   const { brand, category, number_of_items, price } = req.body;
 
+  if (!brand || !number_of_items || !price || !category) {
+    return res.status(400).json({ message: 'Brand, number of items, price, and category are required' });
+  }
+
   try {
     const client = await pool.connect();
 
     // Fetch current pack details
-    const packQuery = 'SELECT status FROM packs WHERE id = $1';
+    const packQuery = 'SELECT status, number_of_items FROM packs WHERE id = $1';
     const packResult = await client.query(packQuery, [id]);
     const pack = packResult.rows[0];
 
@@ -195,6 +199,44 @@ app.put('/packs/:id', async (req, res) => {
       }
     }
 
+    // Fetch existing item IDs
+    const existingItemsQuery = 'SELECT id FROM items WHERE pack_id = $1';
+    const existingItemsResult = await client.query(existingItemsQuery, [id]);
+    const existingItemIds = existingItemsResult.rows.map(row => row.id);
+
+    // Determine the number of items to add or remove
+    const currentNumberOfItems = pack.number_of_items;
+    const newNumberOfItems = parseInt(number_of_items, 10);
+    const difference = newNumberOfItems - currentNumberOfItems;
+
+    // Handle item changes
+    if (difference > 0) {
+      // Add new items
+      const itemQueries = [];
+      for (let i = 0; i < difference; i++) {
+        const newItemId = `${id}${String(currentNumberOfItems + i + 1).padStart(5, '0')}`;
+        // Only add item if it doesn't already exist
+        if (!existingItemIds.includes(newItemId)) {
+          itemQueries.push(client.query('INSERT INTO items (id, pack_id) VALUES ($1, $2)', [newItemId, id]));
+        }
+      }
+      await Promise.all(itemQueries);
+    } else if (difference < 0) {
+      // Remove items
+      const itemsToRemove = -difference; // Number of items to remove
+      await client.query(`
+        DELETE FROM items
+        WHERE pack_id = $1
+        AND id IN (
+          SELECT id
+          FROM items
+          WHERE pack_id = $1
+          ORDER BY id
+          LIMIT $2
+        )
+      `, [id, itemsToRemove]);
+    }
+
     // Update the pack details
     const updatePackQuery = `
       UPDATE packs
@@ -202,7 +244,7 @@ app.put('/packs/:id', async (req, res) => {
       WHERE id = $5
       RETURNING *
     `;
-    const result = await client.query(updatePackQuery, [brand, category, number_of_items, price, id]);
+    const result = await client.query(updatePackQuery, [brand, category, newNumberOfItems, price, id]);
     const updatedPack = result.rows[0];
 
     client.release();
