@@ -162,7 +162,40 @@ app.put('/packs/:id', async (req, res) => {
   try {
     const client = await pool.connect();
 
-    // Update the pack details in the database
+    // Fetch current pack details
+    const packQuery = 'SELECT status FROM packs WHERE id = $1';
+    const packResult = await client.query(packQuery, [id]);
+    const pack = packResult.rows[0];
+
+    if (!pack) {
+      res.status(404).json({ error: 'Pack not found' });
+      client.release();
+      return;
+    }
+
+    // Check if the pack status is 'Sold' and validate the price
+    if (pack.status === 'Sold') {
+      const transactionQuery = 'SELECT amount FROM Transactions WHERE pack_id = $1';
+      const transactionResult = await client.query(transactionQuery, [id]);
+      const transaction = transactionResult.rows[0];
+
+      if (!transaction) {
+        res.status(400).json({ error: 'No transaction found for the pack' });
+        client.release();
+        return;
+      }
+
+      const amount = parseFloat(transaction.amount); // Ensure amount is a number
+      const newPrice = parseFloat(price); // Ensure price is a number
+
+      if (newPrice >= amount) { // Updated condition
+        res.status(400).json({ error: 'Price must be smaller than the amount in transactions' }); 
+        client.release();
+        return;
+      }
+    }
+
+    // Update the pack details
     const updatePackQuery = `
       UPDATE packs
       SET brand = $1, category = $2, number_of_items = $3, price = $4, created_date = NOW()
