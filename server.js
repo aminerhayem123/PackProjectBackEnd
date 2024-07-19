@@ -163,159 +163,106 @@ app.put('/packs/:id', async (req, res) => {
     return res.status(400).json({ message: 'Brand, number of items, price, and category are required' });
   }
 
+  const newNumberOfItems = parseInt(number_of_items, 10);
+  const newPrice = parseFloat(price);
+
   try {
     const client = await pool.connect();
 
-    // Fetch current pack details
-    const packQuery = 'SELECT status, number_of_items FROM packs WHERE id = $1';
-    const packResult = await client.query(packQuery, [id]);
-    const pack = packResult.rows[0];
+    try {
+      await client.query('BEGIN');
 
-    if (!pack) {
-      res.status(404).json({ error: 'Pack not found' });
-      client.release();
-      return;
-    }
+      // Fetch current pack details
+      const packQuery = 'SELECT status, number_of_items FROM packs WHERE id = $1';
+      const packResult = await client.query(packQuery, [id]);
+      const pack = packResult.rows[0];
 
-    // Check if the pack status is 'Sold' and validate the price
-    if (pack.status === 'Sold') {
-      const transactionQuery = 'SELECT amount FROM Transactions WHERE pack_id = $1';
-      const transactionResult = await client.query(transactionQuery, [id]);
-      const transaction = transactionResult.rows[0];
-
-      if (!transaction) {
-        res.status(400).json({ error: 'No transaction found for the pack' });
-        client.release();
+      if (!pack) {
+        await client.query('ROLLBACK');
+        res.status(404).json({ error: 'Pack not found' });
         return;
       }
 
-      const amount = parseFloat(transaction.amount); // Ensure amount is a number
-      const newPrice = parseFloat(price); // Ensure price is a number
+      // Check if the pack status is 'Sold' and validate the price
+      if (pack.status === 'Sold') {
+        const transactionQuery = 'SELECT amount FROM Transactions WHERE pack_id = $1';
+        const transactionResult = await client.query(transactionQuery, [id]);
+        const transaction = transactionResult.rows[0];
 
-      if (newPrice >= amount) { // Updated condition
-        res.status(400).json({ error: 'Price must be smaller than the amount in transactions' }); 
-        client.release();
-        return;
-      }
-    }
+        if (!transaction) {
+          await client.query('ROLLBACK');
+          res.status(400).json({ error: 'No transaction found for the pack' });
+          return;
+        }
 
-    // Fetch existing item IDs
-    const existingItemsQuery = 'SELECT id FROM items WHERE pack_id = $1';
-    const existingItemsResult = await client.query(existingItemsQuery, [id]);
-    const existingItemIds = existingItemsResult.rows.map(row => row.id);
+        const amount = parseFloat(transaction.amount);
 
-    // Determine the number of items to add or remove
-    const currentNumberOfItems = pack.number_of_items;
-    const newNumberOfItems = parseInt(number_of_items, 10);
-    const difference = newNumberOfItems - currentNumberOfItems;
-
-    // Handle item changes
-    if (difference > 0) {
-      // Add new items
-      const itemQueries = [];
-      for (let i = 0; i < difference; i++) {
-        const newItemId = `${id}${String(currentNumberOfItems + i + 1).padStart(5, '0')}`;
-        // Only add item if it doesn't already exist
-        if (!existingItemIds.includes(newItemId)) {
-          itemQueries.push(client.query('INSERT INTO items (id, pack_id) VALUES ($1, $2)', [newItemId, id]));
+        if (newPrice >= amount) {
+          await client.query('ROLLBACK');
+          res.status(400).json({ error: 'Price must be smaller than the amount in transactions' });
+          return;
         }
       }
-      await Promise.all(itemQueries);
-    } else if (difference < 0) {
-      // Remove items
-      const itemsToRemove = -difference; // Number of items to remove
-      await client.query(`
-        DELETE FROM items
-        WHERE pack_id = $1
-        AND id IN (
-          SELECT id
-          FROM items
+
+      // Fetch existing item IDs
+      const existingItemsQuery = 'SELECT id FROM items WHERE pack_id = $1';
+      const existingItemsResult = await client.query(existingItemsQuery, [id]);
+      const existingItemIds = existingItemsResult.rows.map(row => row.id);
+
+      // Determine the number of items to add or remove
+      const currentNumberOfItems = pack.number_of_items;
+      const difference = newNumberOfItems - currentNumberOfItems;
+
+      if (difference > 0) {
+        // Add new items
+        const itemQueries = [];
+        for (let i = 0; i < difference; i++) {
+          const newItemId = `${id}${String(currentNumberOfItems + i + 1).padStart(5, '0')}`;
+          // Only add item if it doesn't already exist
+          if (!existingItemIds.includes(newItemId)) {
+            itemQueries.push(client.query('INSERT INTO items (id, pack_id) VALUES ($1, $2)', [newItemId, id]));
+          }
+        }
+        await Promise.all(itemQueries);
+      } else if (difference < 0) {
+        // Remove items
+        const itemsToRemove = -difference;
+        // Make sure to remove the correct items
+        await client.query(`
+          DELETE FROM items
           WHERE pack_id = $1
-          ORDER BY id
-          LIMIT $2
-        )
-      `, [id, itemsToRemove]);
+          AND id IN (
+            SELECT id
+            FROM items
+            WHERE pack_id = $1
+            ORDER BY id
+            LIMIT $2
+          )
+        `, [id, itemsToRemove]);
+      }
+
+      // Update the pack details
+      const updatePackQuery = `
+        UPDATE packs
+        SET brand = $1, category = $2, number_of_items = $3, price = $4, created_date = NOW()
+        WHERE id = $5
+        RETURNING *
+      `;
+      const result = await client.query(updatePackQuery, [brand, category, newNumberOfItems, newPrice, id]);
+      const updatedPack = result.rows[0];
+
+      await client.query('COMMIT');
+      res.status(200).json(updatedPack);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error updating pack:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    } finally {
+      client.release();
     }
-
-    // Update the pack details
-    const updatePackQuery = `
-      UPDATE packs
-      SET brand = $1, category = $2, number_of_items = $3, price = $4, created_date = NOW()
-      WHERE id = $5
-      RETURNING *
-    `;
-    const result = await client.query(updatePackQuery, [brand, category, newNumberOfItems, price, id]);
-    const updatedPack = result.rows[0];
-
-    client.release();
-
-    res.status(200).json(updatedPack);
   } catch (err) {
-    console.error('Error updating pack:', err);
+    console.error('Error connecting to the database:', err);
     res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-app.delete('/items/:id', async (req, res) => {
-  const { id } = req.params;
-  const { password } = req.body; // Only password is required
-
-  try {
-    const client = await pool.connect();
-
-    // Authenticate the user based on password
-    const userQuery = 'SELECT * FROM users WHERE password = $1';
-    const userResult = await client.query(userQuery, [password]);
-    const user = userResult.rows[0];
-
-    if (!user) {
-      client.release();
-      return res.status(400).json({ message: 'Password incorrect. Access denied.' });
-    }
-
-    // Get pack_id for cascading deletion
-    const packIdQuery = 'SELECT pack_id FROM items WHERE id = $1';
-    const packIdResult = await client.query(packIdQuery, [id]);
-    const packId = packIdResult.rows[0]?.pack_id;
-
-    if (!packId) {
-      client.release();
-      return res.status(404).json({ message: 'Item not found' });
-    }
-
-    // Delete the item
-    const deleteItemQuery = 'DELETE FROM items WHERE id = $1';
-    const deleteItemResult = await client.query(deleteItemQuery, [id]);
-
-    // Check if the deletion was successful
-    if (deleteItemResult.rowCount === 0) {
-      client.release();
-      return res.status(404).json({ message: 'Item not found' });
-    }
-
-    // Update the number of items in the pack
-    const updateItemCountQuery = 'UPDATE packs SET number_of_items = number_of_items - 1 WHERE id = $1';
-    await client.query(updateItemCountQuery, [packId]);
-
-    // Check if the pack has any remaining items
-    const itemCountQuery = 'SELECT number_of_items FROM packs WHERE id = $1';
-    const itemCountResult = await client.query(itemCountQuery, [packId]);
-    const remainingItemCount = parseInt(itemCountResult.rows[0].number_of_items);
-
-    // If no items remain in the pack, delete associated images and transactions
-    if (remainingItemCount === 0) {
-      await client.query('DELETE FROM images WHERE pack_id = $1', [packId]);
-      await client.query('DELETE FROM transactions WHERE pack_id = $1', [packId]);
-      // Delete the pack itself
-      await client.query('DELETE FROM packs WHERE id = $1', [packId]);
-    }
-
-    client.release();
-    res.json({ success: true, message: 'Item deleted successfully' });
-
-  } catch (error) {
-    console.error('Error deleting item:', error);
-    res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -328,58 +275,6 @@ app.get('/items', async (req, res) => {
     res.json(items);
   } catch (error) {
     console.error('Error fetching items:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-app.delete('/items/:id', async (req, res) => {
-  const { id } = req.params;
-  const { email, password } = req.body;
-
-  try {
-    const client = await pool.connect();
-    const userQuery = 'SELECT * FROM users WHERE email = $1';
-    const userResult = await client.query(userQuery, [email]);
-    const user = userResult.rows[0];
-
-    if (!user) {
-      client.release();
-      return res.status(400).json({ message: 'Email or password incorrect' });
-    }
-
-    // Compare the provided password with the hashed password from the database
-    const passwordMatch = await compare(password, user.password);
-    if (!passwordMatch) {
-      client.release();
-      return res.status(400).json({ message: 'Email or password incorrect' });
-    }
-
-    // Get pack_id for cascading deletion
-    const packIdQuery = 'SELECT pack_id FROM items WHERE id = $1';
-    const packIdResult = await client.query(packIdQuery, [id]);
-    const packId = packIdResult.rows[0].pack_id;
-
-    // Delete the item
-    await client.query('DELETE FROM items WHERE id = $1', [id]);
-
-    // Check if the pack has any remaining items
-    const itemCountQuery = 'SELECT COUNT(*) FROM items WHERE pack_id = $1';
-    const itemCountResult = await client.query(itemCountQuery, [packId]);
-    const remainingItemCount = parseInt(itemCountResult.rows[0].count);
-
-    // If no items remain in the pack, delete the pack
-    if (remainingItemCount === 0) {
-      // Delete associated images due to ON DELETE CASCADE
-      await client.query('DELETE FROM images WHERE pack_id = $1', [packId]);
-      await client.query('DELETE FROM transactions WHERE pack_id = $1', [packId]);
-      // Delete the pack itself
-      await client.query('DELETE FROM packs WHERE id = $1', [packId]);
-    }
-
-    client.release();
-    res.json({ success: true, message: 'Item deleted successfully' });
-  } catch (error) {
-    console.error('Error deleting item:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
