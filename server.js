@@ -562,10 +562,11 @@ app.get('/stats', async (req, res) => {
 
     // Query 2: Number of Items in Each Category
     const itemsByCategoryResult = await client.query(`
-      SELECT category, COUNT(*) AS number_of_items
-      FROM packs
-      GROUP BY category
-      ORDER BY category
+      SELECT packs.category, COUNT(items.id) AS number_of_items
+      FROM items
+      JOIN packs ON items.pack_id = packs.id
+      GROUP BY packs.category
+      ORDER BY packs.category
     `);
 
     // Query 3: Number of Packs Sold
@@ -606,10 +607,39 @@ app.get('/stats', async (req, res) => {
     const { yearly_profit: yearlyProfit, yearly_expenses: yearlyExpenses } = yearlyDataResult.rows[0];
     const yearlyProfitPercentage = yearlyExpenses ? (yearlyProfit / yearlyExpenses) * 100 : 0;
 
+    // Query 8: Number of Packs Sold per Category
+    const packsSoldByCategoryResult = await client.query(`
+      SELECT packs.category, COUNT(transactions.id) AS packs_sold
+      FROM transactions
+      JOIN packs ON transactions.pack_id = packs.id
+      GROUP BY packs.category
+      ORDER BY packs.category
+    `);
+
+    // Query 9: Profit per Category
+    const profitByCategoryResult = await client.query(`
+      SELECT packs.category, SUM(transactions.profit) AS category_profit
+      FROM transactions
+      JOIN packs ON transactions.pack_id = packs.id
+      GROUP BY packs.category
+      ORDER BY packs.category
+    `);
+
+    // Combine data for items by category with packs sold and profit
+    const itemsByCategory = itemsByCategoryResult.rows.map(item => {
+      const packsSold = packsSoldByCategoryResult.rows.find(pack => pack.category === item.category)?.packs_sold || 0;
+      const categoryProfit = profitByCategoryResult.rows.find(profit => profit.category === item.category)?.category_profit || 0;
+      return {
+        ...item,
+        packs_sold: packsSold,
+        category_profit: categoryProfit,
+      };
+    });
+
     // Response
     res.json({
       totalItems,
-      itemsByCategory: itemsByCategoryResult.rows,
+      itemsByCategory,
       totalPacksSold,
       totalProfit,
       totalExpenses,
