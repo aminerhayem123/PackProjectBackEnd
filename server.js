@@ -10,7 +10,7 @@ app.use(bodyParser.json());
 app.use(cors());
 
 const pool = new Pool({
-  connectionString: 'postgresql://postgres:atrox123@localhost:5432/app',
+  connectionString: 'postgresql://postgres:DcKjrtBiMkDeDMkPqkJujJwwhHVaFvQK@viaduct.proxy.rlwy.net:17470/railway',
 });
 
 const storage = multer.memoryStorage();
