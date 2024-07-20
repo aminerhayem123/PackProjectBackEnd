@@ -718,6 +718,28 @@ app.delete('/packs/:id', async (req, res) => {
   }
 });
 
+// Endpoint to aggregate per category
+app.get('/aggregated-packs', async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        category,
+        COUNT(*) AS number_of_packs,
+        SUM(number_of_items) AS number_of_items,
+        COALESCE(SUM(CASE WHEN t.id IS NOT NULL THEN 1 ELSE 0 END), 0) AS packs_sold,
+        COALESCE(SUM(p.price), 0) AS total_price
+      FROM packs p
+      LEFT JOIN transactions t ON p.id = t.pack_id
+      GROUP BY category;
+    `;
+
+    const result = await pool.query(query);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching aggregated packs:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
 app.listen(5000, () => {
   console.log('Server is running on port 5000');
 });
