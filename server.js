@@ -31,7 +31,7 @@ app.post('/login', async (req, res) => {
     res.json({ message: 'Login successful', token: 'dummy-token', user });
   } catch (error) {
     console.error('Error during login:', error.message, error.stack);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'Server error - Not responding', error: error.message });
   }
 });
 
