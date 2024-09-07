@@ -158,15 +158,15 @@ app.get('/categories', async (req, res) => {
 // Endpoint to update pack details
 app.put('/packs/:id', async (req, res) => {
   const { id } = req.params;
-  const { brand, category, number_of_items, price } = req.body;
+  const { brand, category, number_of_items, price,number_of_packs } = req.body;
 
-  if (!brand || !number_of_items || !price || !category) {
-    return res.status(400).json({ message: 'Brand, number of items, price, and category are required' });
+  if (!brand || !number_of_items || !price || !category||!number_of_packs) {
+    return res.status(400).json({ message: 'Brand, number of items, price,number_of_packs and category are required' });
   }
 
   const newNumberOfItems = parseInt(number_of_items, 10);
   const newPrice = parseFloat(price);
-
+  const newNumberOfPacks = parseInt(number_of_packs, 10);
   try {
     const client = await pool.connect();
 
@@ -245,11 +245,11 @@ app.put('/packs/:id', async (req, res) => {
       // Update the pack details
       const updatePackQuery = `
         UPDATE packs
-        SET brand = $1, category = $2, number_of_items = $3, price = $4, created_date = NOW()
-        WHERE id = $5
+        SET brand = $1, category = $2, number_of_items = $3, price = $4,number_of_packs = $5, created_date = NOW()
+        WHERE id = $6
         RETURNING *
       `;
-      const result = await client.query(updatePackQuery, [brand, category, newNumberOfItems, newPrice, id]);
+      const result = await client.query(updatePackQuery, [brand, category, newNumberOfItems, newPrice,newNumberOfPacks, id]);
       const updatedPack = result.rows[0];
 
       await client.query('COMMIT');
