@@ -249,7 +249,7 @@ app.put('/packs/:id', async (req, res) => {
         WHERE id = $6
         RETURNING *
       `;
-      const result = await client.query(updatePackQuery, [brand, category, newNumberOfItems, newPrice,newNumberOfPacks, id]);
+      const result = await client.query(updatePackQuery, [brand, category, newNumberOfItems, newPrice, newNumberOfPacks, id]);
       const updatedPack = result.rows[0];
 
       await client.query('COMMIT');
