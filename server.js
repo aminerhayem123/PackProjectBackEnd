@@ -10,7 +10,7 @@ app.use(bodyParser.json());
 app.use(cors());
 
 const pool = new Pool({
-  connectionString: 'postgresql://postgres:DcKjrtBiMkDeDMkPqkJujJwwhHVaFvQK@viaduct.proxy.rlwy.net:17470/railway',
+  connectionString: 'postgresql://postgres:atrox123@localhost:5432/app',
 });
 
 const storage = multer.memoryStorage();
@@ -60,10 +60,10 @@ app.put('/api/users/:id', async (req, res) => {
 });
 
 app.post('/packs', upload.array('images', 10), async (req, res) => {
-  const { brand, price, numberOfItems, category } = req.body;
+  const { brand, price, numberOfItems, category,numberOfPacks  } = req.body;
 
-  if (!brand || !numberOfItems || !price || !category) {
-    return res.status(400).json({ message: 'Brand, number of items, price, and category are required' });
+  if (!brand || !numberOfItems || !price || !category || !numberOfPacks ) {
+    return res.status(400).json({ message: 'Brand, number of items, price, and category and numberOfPacks are required' });
   }
 
   const images = req.files;
@@ -78,9 +78,10 @@ app.post('/packs', upload.array('images', 10), async (req, res) => {
 
     // Insert into packs table
     const packInsertResult = await client.query(
-      'INSERT INTO packs (id, brand, price, status, number_of_items, category) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_date',
-      [packId, brand, parseFloat(price), status, parseInt(numberOfItems), category]
+      'INSERT INTO packs (id, brand, price, status, number_of_items, category, number_of_packs) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, created_date',
+      [packId, brand, parseFloat(price), status, parseInt(numberOfItems), category, parseInt(numberOfPacks)]
     );
+    
     const { id: insertedPackId, created_date } = packInsertResult.rows[0];
 
     // Insert into items table
@@ -317,7 +318,8 @@ app.get('/items/search', (req, res) => {
 
 app.post('/packs/:id/sold', async (req, res) => {
   const { id } = req.params;
-  const { amount, password } = req.body; // Extract amount and password from request body
+  const { amount, password, numPacks } = req.body; // Extract amount, password, and numPacks from request body
+  const totalAmount = parseFloat(amount) * parseInt(numPacks, 10);
 
   try {
     const client = await pool.connect();
@@ -349,22 +351,59 @@ app.post('/packs/:id/sold', async (req, res) => {
     }
 
     // Calculate profit (assuming profit is amount received - pack price)
-    const { price } = pack;
-    const profit = parseFloat(amount) - parseFloat(price);
+    const { number_of_packs, price } = pack;
+    const profit = totalAmount - (parseFloat(price) * parseInt(numPacks, 10));
+
+    // Validate the entered numPacks
+    if (numPacks > number_of_packs) {
+      client.release();
+      return res.status(400).json({ message: 'Entered number of packs exceeds available packs' });
+    }
 
     // Insert transaction into database
     const insertTransactionQuery = `
-      INSERT INTO transactions (pack_id, amount, profit)
-      VALUES ($1, $2, $3)
+      INSERT INTO transactions (pack_id, amount, profit, num_packs)
+      VALUES ($1, $2, $3, $4)
       RETURNING id, sale_date
     `;
-    const transactionResult = await client.query(insertTransactionQuery, [id, parseFloat(amount), profit]);
+    const transactionResult = await client.query(insertTransactionQuery, [id, totalAmount, profit, parseInt(numPacks, 10)]);
     const { id: transactionId, sale_date } = transactionResult.rows[0];
 
-    // Update pack status to 'Sold' in the packs table
-    const updatePackQuery = 'UPDATE packs SET status = $1 WHERE id = $2';
-    await client.query(updatePackQuery, ['Sold', id]);
+    // Check remaining packs after the sale
+    const remainingPacks = number_of_packs - numPacks;
 
+    // Log remaining packs for debugging
+    console.log('Current number of packs:', number_of_packs);
+    console.log('Number of packs sold:', numPacks);
+    console.log('Remaining packs:', remainingPacks);
+
+    // Determine the update query and values
+    let updatePackQuery;
+    let updatePackValues;
+
+    if (remainingPacks <= 0) {
+      // If no packs remain, update the status to 'All Sold'
+      updatePackQuery = 'UPDATE packs SET number_of_packs = $1, status = $2 WHERE id = $3';
+      updatePackValues = [0, 'All Sold', id];
+    } else {
+      // Otherwise, update the number of packs and status to 'Sold'
+      updatePackQuery = 'UPDATE packs SET number_of_packs = $1, status = $2 WHERE id = $3';
+      updatePackValues = [remainingPacks, 'Sold', id];
+    }
+
+    // Log the update query and values for debugging
+    console.log('Executing query:', updatePackQuery);
+    console.log('With values:', updatePackValues);
+
+    // Update pack details
+    if (updatePackQuery) {
+      const updateResult = await client.query(updatePackQuery, updatePackValues);
+      console.log('Update result:', updateResult.rowCount); // Log how many rows were affected
+    } else {
+      throw new Error('Update query is not defined');
+    }
+
+    // Release the client
     client.release();
 
     res.json({ message: 'Pack marked as sold successfully' });
@@ -381,7 +420,7 @@ app.get('/transactions', async (req, res) => {
     
     // Query to fetch transactions and join with packs to get category
     const result = await client.query(`
-      SELECT t.id, t.pack_id, t.sale_date, t.amount, t.profit, p.category
+      SELECT t.id,t.num_packs, t.pack_id, t.sale_date, t.amount, t.profit, p.category
       FROM transactions t
       JOIN packs p ON t.pack_id = p.id
     `);
