@@ -318,7 +318,7 @@ app.get('/items/search', (req, res) => {
 
 app.post('/packs/:id/sold', async (req, res) => {
   const { id } = req.params;
-  const { amount, password, numPacks } = req.body; // Extract amount, password, and numPacks from request body
+  const { amount, password, numPacks,clientName, phone } = req.body; // Extract amount, password, and numPacks from request body
   const totalAmount = parseFloat(amount) * parseInt(numPacks, 10);
 
   try {
@@ -359,14 +359,31 @@ app.post('/packs/:id/sold', async (req, res) => {
       client.release();
       return res.status(400).json({ message: 'Entered number of packs exceeds available packs' });
     }
+    // Check if client exists based on phone number
+    const clientQuery = 'SELECT id FROM clients WHERE phone = $1';
+    const clientResult = await client.query(clientQuery, [phone]);
+    let clientId;
 
+    if (clientResult.rows.length > 0) {
+      // Client exists
+      clientId = clientResult.rows[0].id;
+    } else {
+      // Insert the new client into the clients table
+      const insertClientQuery = `
+        INSERT INTO clients (name, phone, amount)
+        VALUES ($1, $2, $3)
+        RETURNING id
+      `;
+      const newClientResult = await client.query(insertClientQuery, [clientName, phone, 0]);
+      clientId = newClientResult.rows[0].id;
+    }
     // Insert transaction into database
     const insertTransactionQuery = `
-      INSERT INTO transactions (pack_id, amount, profit, num_packs)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO transactions (pack_id, amount, profit, num_packs, client_id)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING id, sale_date
     `;
-    const transactionResult = await client.query(insertTransactionQuery, [id, totalAmount, profit, parseInt(numPacks, 10)]);
+    const transactionResult = await client.query(insertTransactionQuery, [id, totalAmount, profit, parseInt(numPacks, 10),clientId]);
     const { id: transactionId, sale_date } = transactionResult.rows[0];
 
     // Check remaining packs after the sale
@@ -412,17 +429,41 @@ app.post('/packs/:id/sold', async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+// Endpoint to get all clients
+app.get('/clients', async (req, res) => {
+  try {
+      const client = await pool.connect();
+      const result = await client.query('SELECT * FROM clients');
+      const clients = result.rows;
+      res.status(200).json(clients); // Send the retrieved clients as JSON
+      client.release(); // Release the client back to the pool
+  } catch (error) {
+      console.error('Error fetching clients:', error);
+      res.status(500).json({ message: 'Error fetching clients' });
+  }
+});
 
 // Endpoint to fetch transactions along with pack details
 app.get('/transactions', async (req, res) => {
   try {
     const client = await pool.connect();
     
-    // Query to fetch transactions and join with packs to get category
+    // Query to fetch transactions, join with packs to get category, and clients to get client_id
     const result = await client.query(`
-      SELECT t.id,t.num_packs, t.pack_id, t.sale_date, t.amount, t.profit, p.category
+      SELECT 
+        t.id,
+        t.num_packs,
+        t.pack_id,
+        t.sale_date,
+        t.amount,
+        t.profit,
+        p.category,
+        t.client_id,   -- Adding client_id from transactions
+        c.name AS client_name, -- Optionally add client name from clients table
+        c.phone AS client_phone  -- Optionally add client phone from clients table
       FROM transactions t
       JOIN packs p ON t.pack_id = p.id
+      JOIN clients c ON t.client_id = c.id  -- Join with clients table to get client information
     `);
     
     client.release();
